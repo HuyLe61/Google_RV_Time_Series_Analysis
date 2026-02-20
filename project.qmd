@@ -1,0 +1,296 @@
+---
+title: "Time Series Modeling of Google Realized Volatility with Exogenous Market Signals\\vspace{-2cm}"
+author: "Huy Le"
+date: "February 2026"
+date-format: "MMMM YYYY"
+bibliography: references.bib
+output: pdf_document
+format:
+  pdf:
+    cite-method: natbib
+    biblio-style: unsrtnat
+    include-in-header:
+      text: |
+        \RedeclareSectionCommand[
+          beforeskip=0.5em,
+          runin=false,
+          afterskip=0em
+        ]{section}
+        \RedeclareSectionCommand[
+          beforeskip=0em,
+          runin=false,
+          afterskip=0em
+        ]{subsection}
+        \RedeclareSectionCommand[
+          beforeskip=0em,
+          runin=false,
+          afterskip=0em
+        ]{subsubsection}
+        \usepackage{fullpage}
+        \usepackage{float}
+        \setcitestyle{numbers}
+number-sections: true
+jupyter: python3
+---
+
+\newcommand\prob{\mathbb{P}}
+\newcommand\E{\mathbb{E}}
+\newcommand\var{\mathrm{Var}}
+\newcommand\cov{\mathrm{Cov}}
+
+```{python}
+#| echo: false
+#| label: setup
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+```
+
+## Abstract {.unnumbered}
+
+We model the weekly log realized volatility (Log RV) of Google (GOOG) stock from 2019 to 2025 using ARIMA and SARIMAX frameworks. After constructing non-overlapping 5-day realized volatility estimates and merging exogenous variables (VIX and trading volume), we conduct an extensive AIC-based model selection over ARIMA, SARIMA, and SARIMAX specifications. The best pure time series model is ARIMA(3,0,3), while incorporating the VIX index as an exogenous regressor yields a SARIMAX(3,0,3)(0,0,1)$_4$ model with substantially lower AIC. One-step-ahead rolling forecasts on a held-out test set confirm that the SARIMAX model outperforms the ARIMA baseline on RMSE, MAE, and MAPE, demonstrating that market-wide fear captured by VIX provides genuine predictive power for individual stock volatility.
+
+# Introduction
+
+Realized volatility (RV) is a key quantity in financial risk management. Unlike implied volatility, which is forward-looking and derived from option prices, RV is computed directly from observed returns and provides an ex-post measure of how much a stock actually moved. Accurate forecasting of RV is essential for portfolio allocation, option pricing, and risk budgeting.
+
+Google (Alphabet, ticker GOOG) is one of the most liquid large-cap equities globally. Its volatility dynamics are shaped by both idiosyncratic events (earnings, regulation, product launches) and systematic market forces. We ask: **can market-wide volatility, as measured by the VIX index, improve forecasts of Google's realized volatility beyond what is achievable with the stock's own history alone?**
+
+The VIX, often called the "investor fear gauge" [@whaley2000], measures the market's expectation of 30-day S&P 500 volatility implied by option prices. Prior literature has established that realized volatility exhibits long memory and strong persistence [@andersen2003; @granger1996], motivating ARMA-type models on log-transformed RV. We extend this by incorporating VIX as an exogenous regressor in a SARIMAX framework and evaluating whether it improves out-of-sample prediction.
+
+Our data spans January 2019 to December 2025, covering the COVID crash, the post-pandemic recovery, and the 2022 rate-hike cycle — a period with substantial variation in volatility regimes.
+
+# Data and Preprocessing
+
+## Realized volatility construction
+
+We download daily GOOG closing prices and compute daily log returns $r_t = \log(P_t / P_{t-1})$. Realized volatility over a 5-day (weekly) window is then
+$$
+\text{RV}_t = \hat\sigma_t \sqrt{252}, \quad \hat\sigma_t = \text{std}(r_{t-4}, \ldots, r_t),
+$$
+where the $\sqrt{252}$ annualizes the estimate. We log-transform to obtain $\text{Log RV}_t = \log(\text{RV}_t)$, which produces a more symmetric, approximately stationary series [@andersen2003].
+
+To avoid mechanical autocorrelation from overlapping windows, we retain every 5th observation, yielding 351 non-overlapping weekly Log RV values.
+
+## Exogenous variables
+
+We also download the VIX index and extract GOOG daily trading volume over the same period. After merging onto the non-overlapping dates (forward-filling VIX for any missing days), each observation carries three potential predictors: lagged Log RV values, the VIX level, and trading volume.
+
+@fig-logrv shows the resulting Log RV series. The COVID spike in early 2020 is the dominant feature, followed by elevated volatility during the 2022 tightening cycle. @fig-exog displays the VIX and volume series for context.
+
+```{python}
+#| echo: false
+#| label: fig-logrv
+#| fig-cap: "Non-overlapping weekly Log Realized Volatility of GOOG, January 2019 to December 2025."
+#| fig-pos: "H"
+from IPython.display import Image
+Image(filename='plot/log_realized_volatility_google.png', width=600)
+```
+
+```{python}
+#| echo: false
+#| label: fig-exog
+#| fig-cap: "Exogenous variables: VIX index and GOOG daily trading volume over the sample period."
+#| fig-pos: "H"
+Image(filename='plot/exogenous_variables.png', width=600)
+```
+
+## Train-test split
+
+We split the data chronologically: the first 80% (280 observations, Jan 2019 -- Aug 2024) form the training set, and the remaining 20% (71 observations, Aug 2024 -- Dec 2025) form the test set. All model fitting and selection use only the training set; the test set is reserved for out-of-sample evaluation. @fig-split shows the partition.
+
+```{python}
+#| echo: false
+#| label: fig-split
+#| fig-cap: "Train/test split of the Log RV series. The dashed line marks the boundary."
+#| fig-pos: "H"
+Image(filename='plot/train_test_split.png', width=600)
+```
+
+# Exploratory Analysis
+
+## Stationarity
+
+The Augmented Dickey-Fuller test on the training Log RV yields a test statistic of $-5.32$ ($p < 10^{-5}$), strongly rejecting the unit root null. The series is stationary, so no differencing is needed ($d = 0$).
+
+## Autocorrelation structure
+
+@fig-acf shows the ACF and PACF of training Log RV. The ACF decays slowly, consistent with the well-documented long-memory behavior of volatility [@andersen2003; @granger1996]. The PACF shows significant spikes at lags 1--3, suggesting AR components of order at least 3. Both functions show mild structure around lag 4, motivating a seasonal component with period $s = 4$ (roughly monthly in weekly data).
+
+```{python}
+#| echo: false
+#| label: fig-acf
+#| fig-cap: "ACF and PACF of training Log RV. Significant autocorrelation persists well beyond lag 10; the PACF cuts off sharply after lag 3 with minor structure near lag 4."
+#| fig-pos: "H"
+Image(filename='plot/acf_pacf.png', width=600)
+```
+
+## Spectral analysis
+
+@fig-spectrum presents the raw periodogram and the Welch-smoothed spectral density. The raw periodogram is noisy at low frequencies, which is expected since it is an inconsistent estimator of the spectral density [@shumway17]. The high power near frequency zero reflects the long-memory persistence of volatility rather than a genuine long-period cycle [@granger1996].
+
+The more interpretable feature is a broad peak near frequency 0.04 cycles per observation (period $\approx$ 25 weeks, or roughly 6 months), along with elevated power near 0.25 (period $\approx$ 4 weeks). The latter aligns with the seasonal period $s = 4$ used in our SARIMA specifications.
+
+```{python}
+#| echo: false
+#| label: fig-spectrum
+#| fig-cap: "Raw periodogram (top) and Welch-smoothed spectral density (bottom) of training Log RV."
+#| fig-pos: "H"
+Image(filename='plot/periodogram_and_spectral_density.png', width=600)
+```
+
+# Model Selection
+
+We search over three model families, all fit on the training set with AIC as the selection criterion.
+
+## ARIMA and SARIMA
+
+We fit ARIMA($p$, 0, $q$) for $p, q \in \{0, \ldots, 5\}$ (36 models) and SARIMA($p$, 0, $q$)($P$, 0, $Q$)$_4$ with $p, q \in \{0,\ldots,3\}$ and $P, Q \in \{0, 1\}$ (64 additional models). @tbl-arima-top shows the top models from both families, ranked by AIC. ARIMA(3,0,3) achieves the lowest AIC at 459.31, consistent with the ACF/PACF evidence for three AR and three MA lags. The seasonal extensions do not improve AIC enough to justify their extra parameters.
+
+| Model | AIC |
+|:------|----:|
+| ARIMA(3,0,3) | 459.31 |
+| SARIMA(1,0,3)(0,0,1)$_4$ | 463.20 |
+| SARIMA(3,0,3)(0,0,1)$_4$ | 463.34 |
+| ARIMA(4,0,4) | 463.92 |
+| SARIMA(1,0,3)(1,0,1)$_4$ | 464.16 |
+| SARIMA(3,0,3)(1,0,0)$_4$ | 464.28 |
+: Top (S)ARIMA models by AIC. ARIMA(3,0,3) leads despite having no seasonal component. {#tbl-arima-top}
+
+## SARIMAX grid search
+
+For each SARIMA specification, we additionally include three exogenous configurations: VIX only, Volume only, and VIX + Volume. This yields $64 \times 3 = 192$ additional fits. @tbl-sarimax-top summarizes the top models.
+
+| Model | Exogenous | AIC |
+|:------|:----------|----:|
+| SARIMAX(3,0,3)(0,0,1)$_4$ | VIX | 403.28 |
+| SARIMAX(3,0,3)(1,0,0)$_4$ | VIX | 404.23 |
+| SARIMAX(3,0,3)(0,0,0)$_4$ | VIX | 407.83 |
+| SARIMAX(1,0,1)(0,0,1)$_4$ | VIX | 409.92 |
+| SARIMAX(1,0,3)(0,0,1)$_4$ | VIX | 410.81 |
+| SARIMAX(1,0,1)(1,0,0)$_4$ | VIX | 410.86 |
+: Top SARIMAX models by AIC. All top entries use VIX as the sole exogenous variable. {#tbl-sarimax-top}
+
+VIX-only models uniformly outperform Volume-only (best AIC $\approx 721$) and VIX+Volume (best AIC $\approx 621$) configurations. VIX directly measures market-wide volatility expectations, providing a clean signal. Volume is noisier and adds parameters without commensurate AIC improvement. Including both VIX and Volume worsens AIC relative to VIX alone, suggesting Volume introduces noise when VIX is already present.
+
+## Selected models
+
+We carry forward two models for diagnostics and forecasting:
+
+- **Model A**: ARIMA(3,0,3) — best pure time series model (AIC = 459.31)
+- **Model B**: SARIMAX(3,0,3)(0,0,1)$_4$ with VIX — best exogenous model (AIC = 403.28)
+
+The AIC gap of $\approx 56$ strongly favors Model B.
+
+# Model Interpretation
+
+## ARIMA(3,0,3)
+
+This model says the current Log RV depends on the past 3 values (AR terms) and the past 3 forecast errors (MA terms). The AR(3) component captures the short-term persistence: if volatility was elevated recently, it tends to remain so. The MA(3) component allows the model to correct for recent surprises. All AR and MA coefficients except ar.L2 are significant at the 5% level.
+
+## SARIMAX(3,0,3)(0,0,1)$_4$ [VIX]
+
+This model adds two ingredients. First, VIX enters as a linear regressor with coefficient $\hat\beta \approx 0.041$ ($p < 0.001$), meaning each 1-point increase in VIX raises predicted Log RV by about 0.04 — a sensible relationship since elevated market fear corresponds to higher realized stock volatility. Second, the seasonal MA(1) at lag 4 captures monthly-scale corrections: if the model's forecast error from 4 weeks ago was large, it still influences today's prediction.
+
+# Diagnostics {#sec-diag}
+
+## Residual tests
+
+@tbl-diag summarizes the diagnostic tests on both fitted models.
+
+| Test | ARIMA(3,0,3) | SARIMAX(3,0,3)(0,0,1)$_4$ [VIX] |
+|:-----|:-------------|:------|
+| Ljung-Box (lag 10) | $Q = 3.10$, $p = 0.979$ | $Q = 6.09$, $p = 0.807$ |
+| Jarque-Bera | $JB = 2.93$, $p = 0.231$ | $JB = 26.20$, $p < 0.001$ |
+| ARCH LM (5 lags) | $LM = 1.97$, $p = 0.854$ | $LM = 0.96$, $p = 0.966$ |
+: Residual diagnostic tests for both models. {#tbl-diag}
+
+Both models pass the Ljung-Box test, confirming no significant residual autocorrelation [@ljungbox1978]. Neither shows ARCH effects, suggesting that residual heteroskedasticity is not a major concern. The ARIMA model also passes the Jarque-Bera normality test, while the SARIMAX model shows mild non-normality (excess kurtosis of 3.87), likely driven by a few large residuals associated with the VIX regressor during extreme market events.
+
+## Residual plots
+
+@fig-diag-arima and @fig-diag-sarimax show ACF, QQ, and histogram plots of the residuals. The ARIMA residuals are well-behaved. The SARIMAX residuals show slightly heavier tails in the QQ plot, consistent with the Jarque-Bera rejection, but the ACF is clean.
+
+```{python}
+#| echo: false
+#| label: fig-diag-arima
+#| fig-cap: "Residual diagnostics for ARIMA(3,0,3): ACF, QQ plot, and histogram."
+#| fig-pos: "H"
+Image(filename='plot/diagnostics_ARIMA.png', width=600)
+```
+
+```{python}
+#| echo: false
+#| label: fig-diag-sarimax
+#| fig-cap: "Residual diagnostics for SARIMAX(3,0,3)(0,0,1)$_4$ with VIX."
+#| fig-pos: "H"
+Image(filename='plot/diagnostics_SARIMAX.png', width=600)
+```
+
+# Out-of-Sample Evaluation
+
+We produce one-step-ahead rolling forecasts on the 71-observation test set. At each step, the model is refit on all data observed so far (training + previously revealed test observations) and a single forecast is issued for the next period.
+
+## Forecast accuracy
+
+@tbl-metrics compares the two models on the test set.
+
+| Metric | ARIMA(3,0,3) | SARIMAX [VIX] |
+|:-------|:-------------|:------|
+| RMSE | 0.6222 | **0.5723** |
+| MAE | 0.4662 | **0.4238** |
+| MAPE (%) | 43.96 | **39.67** |
+| Test $R^2$ | $-0.093$ | **0.076** |
+| Train $R^2$ | 0.199 | **0.213** |
+: Out-of-sample forecast metrics. Bold indicates the better model. {#tbl-metrics}
+
+The SARIMAX model reduces RMSE by 8% and MAE by 9% relative to the pure ARIMA. Perhaps most strikingly, the ARIMA model achieves negative test $R^2$, meaning it performs worse than simply predicting the test-set mean. The SARIMAX model achieves a small but positive test $R^2$ of 0.076, demonstrating that VIX provides genuine out-of-sample predictive content.
+
+## Forecast plots
+
+@fig-forecast overlays the actual and predicted Log RV on the test period for both models.
+
+```{python}
+#| echo: false
+#| label: fig-forecast
+#| fig-cap: "One-step-ahead rolling forecasts on the test set. Top: ARIMA(3,0,3). Bottom: SARIMAX(3,0,3)(0,0,1)$_4$ with VIX."
+#| fig-pos: "H"
+Image(filename='plot/rolling_forecast.png', width=600)
+```
+
+Both models track the general level and broad swings, but the SARIMAX model is visibly more responsive to sharp movements — precisely because VIX provides a contemporaneous signal of market stress that the ARIMA model, relying solely on past Log RV, cannot access.
+
+# Conclusions
+
+We draw three main conclusions from this analysis.
+
+First, **ARIMA(3,0,3) provides a reasonable baseline** for weekly GOOG Log RV. The ACF/PACF structure, AIC selection, and clean residual diagnostics all support this specification. However, its out-of-sample performance is weak: it barely improves upon — and by $R^2$ actually underperforms — a naive mean forecast.
+
+Second, **VIX is a powerful exogenous predictor**. Among all exogenous configurations tested, VIX-only models consistently achieved the lowest AIC by a wide margin. Volume provided negligible additional information. This aligns with the interpretation that market-wide fear, not idiosyncratic trading activity, drives the forecastable component of Google's volatility.
+
+Third, **the SARIMAX(3,0,3)(0,0,1)$_4$ model with VIX is the best overall model**, achieving the lowest AIC (403.28), the best test-set RMSE (0.572), and the only positive out-of-sample $R^2$. The seasonal MA term at lag 4 contributes a modest monthly correction. The VIX coefficient of $\approx 0.04$ is highly significant and economically interpretable.
+
+These results suggest that for practical volatility forecasting of individual stocks, incorporating a market-wide volatility measure like VIX is more valuable than increasing the complexity of the univariate time series model. Future work could explore GARCH-type models for the conditional variance of residuals, or test whether intraday realized volatility measures (using 5-minute returns) improve upon our daily-close-based estimates.
+
+## Acknowledgments {.unnumbered}
+
+[Previous project context to be added.]
+
+AI (Claude, Anthropic) was used for debugging code, formatting assistance, and editing prose in this report. All statistical analysis was conducted by the author using the code available in `main.ipynb`.
+
+## Bibliography {.unnumbered}
+
+::: {#refs}
+:::
+
+# Supplementary Material {#sec-supp}
+
+## AIC grid search details
+
+The full ARIMA grid searched 36 models ($p, q \in \{0,\ldots,5\}$); the SARIMA grid searched 64 models ($p, q \in \{0,\ldots,3\}$, $P, Q \in \{0,1\}$, $s=4$); and the SARIMAX grid searched 192 models (64 SARIMA specifications $\times$ 3 exogenous configurations). Models that failed to converge were excluded. All fitting used `statsmodels` SARIMAX with `enforce_stationarity=False` and `enforce_invertibility=False` to allow the optimizer full flexibility; root checks were performed post-hoc.
+
+## Causality and invertibility
+
+For both selected models, we verified the AR and MA polynomial roots. The ARIMA(3,0,3) model has all AR roots with modulus $> 1$ (causal) and MA roots with modulus $> 1$ (invertible). The SARIMAX model's non-seasonal roots also satisfy these conditions. The ADF test on residuals of both models rejects the unit root null ($p < 10^{-5}$), confirming stationarity.
