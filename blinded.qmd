@@ -1,5 +1,6 @@
 ---
 title: "Time Series Analysis of Google Realized Volatility"
+author: "Huy Le and Tyler Yee"
 date: "February 2026"
 date-format: "MMMM YYYY"
 bibliography: references.bib
@@ -48,9 +49,9 @@ Every trading day, financial markets produce a stream of prices, volumes, and de
 Predicting whether a stock will go up or down is famously difficult. The efficient market hypothesis holds that prices already reflect available information, so returns behave roughly like a random walk [@fama1970]. Volatility tells a different story. 
 It clusters, where calm periods tend to follow calm periods, and turbulent ones tend to persist. A trader who can anticipate a spike in volatility can hedge a portfolio with options, whose prices are tied directly to expected volatility, or scale down positions before the storm hits. Conversely, when implied volatility rose above what actually realized, strategies like selling straddles can profit from the gap. Realized volatility (RV), computed from observed returns, measures how much a stock actually moved, and forecasting it well is critical to option pricing, risk budgeting, and portfolio construction.
 
-We focus on Google (Alphabet, ticker GOOG), one of the most liquid large-cap equities globally. Its volatility is shaped by both company-specific events like earnings reports and regulatory actions and by broader market forces. The question we set out to answer is: **can market-wide volatility, as measured by the VIX index, improve forecasts of Google's realized volatility beyond what the stock's own history provides?**
+We focus on Google (Alphabet, ticker GOOG), one of the most liquid large-cap equities globally. Its volatility is shaped by both company-specific events like earnings reports and regulatory actions and by broader market forces. The question we set out to answer is: **can external market signals improve forecasts of Google's realized volatility beyond what the stock's own history provides?**
 
-The VIX is often called the "investor fear gauge" because it captures the market's expectation of near-term S\&P 500 volatility as implied by option prices [@whaley2000]. Prior work has shown that realized volatility exhibits long memory and strong persistence [@andersen2003; @granger1996], which motivates fitting ARMA-type models to log-transformed RV. We take this a step further by adding VIX as an exogenous regressor within a SARIMAX framework and testing whether it actually improves out-of-sample forecasts.
+We consider two candidate exogenous variables. The first is the VIX index, often called the "investor fear gauge," which captures the market's expectation of near-term S\&P 500 volatility as implied by option prices [@whaley2000]. Because VIX reflects aggregate risk sentiment, it may contain information about upcoming turbulence that has not yet appeared in a single stock's returns. The second is trading volume, which is a natural proxy for investor attention and liquidity. Spikes in volume often accompany large price moves, so volume could carry a leading signal for realized volatility. Prior work has shown that realized volatility exhibits long memory and strong persistence [@andersen2003; @granger1996], which motivates fitting ARMA-type models to log-transformed RV. We extend this by testing both VIX and volume as exogenous regressors within a SARIMAX framework and evaluating which, if either, improves out-of-sample forecasts.
 
 Our data runs from January 2019 through December 2025, a window that covers the COVID crash, the post-pandemic recovery, and the 2022 rate-hike cycle, giving us a wide range of volatility regimes to work with.
 
